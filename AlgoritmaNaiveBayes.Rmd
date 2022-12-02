@@ -1,0 +1,224 @@
+---
+title: "AnalisisSentimenNaiveBayes"
+author: "Rizky Susanto - Henricus Primastavia"
+date: "2022-11-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tm)
+library(wordcloud2)
+library(vroom)
+library(here)
+library(RTextTools)
+library(dplyr)
+library(wordcloud)
+library(shiny)
+library(ggplot2)
+library(plotly)
+```
+
+```{r}
+#skoring
+kalimat2 <- read.csv('HalodocClean.csv')
+View(kalimat2)
+kata.positif <- scan("kata-positif.txt",what="character",comment.char=";")
+kata.negatif <- scan("kata-negatif.txt",what="character",comment.char=";")
+score.sentiment = function(kalimat2, kata.positif, kata.negatif,
+                           .progress='none')
+{
+  require(plyr)
+  require(stringr)
+  scores = laply(kalimat2, function(kalimat, kata.positif,
+                                    kata.negatif) {
+    kalimat = gsub('[[:punct:]]', '', kalimat)
+    kalimat = gsub('[[:cntrl:]]', '', kalimat)
+    kalimat = gsub('\\d+', '', kalimat)
+    kalimat = tolower(kalimat)
+    list.kata = str_split(kalimat, '\\s+')
+    kata2 = unlist(list.kata)
+    positif.matches = match(kata2, kata.positif)
+    negatif.matches = match(kata2, kata.negatif)
+    positif.matches = !is.na(positif.matches)
+    negatif.matches = !is.na(negatif.matches)
+    score = sum(positif.matches) - (sum(negatif.matches))
+    return(score)
+  }, kata.positif, kata.negatif, .progress=.progress )
+  scores.df = data.frame(score=scores, text=kalimat2)
+  return(scores.df)}
+
+hasil = score.sentiment(kalimat2$text, kata.positif, kata.negatif)
+
+#mengubah nilai score menjadi sentimen
+hasil$klasifikasi<- ifelse(hasil$score<0, "Negatif",ifelse(hasil$score==0,"Netral","Positif"))
+hasil$klasifikasi
+View(hasil)
+
+#menukar urutan baris
+data <- hasil[c(3,1,2)]
+
+View(data)
+write.csv(data, file = "data_label_halodoc.csv")
+```
+
+
+```{r}
+#Lexicon
+library(e1071) #Untuk Naive Bayes
+library(caret) #untuk Klasifikasi Data
+library(syuzhet) #untuk membaca fungsi get_nrc
+
+Halodoc <- read.csv("HalodocClean.csv", stringsAsFactors =  FALSE)
+review <- as.character(Halodoc$text) #merubah text menjadi char
+s <- get_nrc_sentiment(review)
+review_combine <- cbind(Halodoc$text,s) #klasifikasi Data
+par(mar=rep(3,4))
+a <- barplot(colSums(s), col=rainbow(10),ylab='count',main='Sentiment Analisis')
+brplt <- a
+```
+
+```{r}
+#Naive Bayes
+require (corpus)
+
+data.frame <- read.csv("data_label_halodoc.csv",stringsAsFactors = FALSE)
+data.frame$klasifikasi <- as.factor(data.frame$klasifikasi)
+glimpse(data.frame)
+
+set.seed(20)
+data.frame <- data.frame[sample(nrow(data.frame)),]
+data.frame <- data.frame[sample(nrow(data.frame)),]
+glimpse(data.frame)
+
+corpus<-Corpus(VectorSource(data.frame$text))
+corpus
+inspect(corpus[1:10])
+
+#fungsinya untuk membersihkan data data yang tidak dibutuhkan 
+corpus.clean<-corpus%>%
+    tm_map(content_transformer(tolower))%>%
+    tm_map(removePunctuation)%>%
+    tm_map(removeNumbers)%>%
+    tm_map(removeWords, c("yang", "dan", "dari", "aasi", "ini", "kita", "untuk" ,"nya"))%>%
+    tm_map(removeWords,stopwords(kind="en"))%>%
+    tm_map(stripWhitespace)
+dtm<-DocumentTermMatrix(corpus.clean)
+inspect(dtm[1:10,1:20])
+
+df.train<-data.frame[1:500,]
+df.test<-data.frame[501:1000,]                                            
+dtm.train<-dtm[1:500,]
+dtm.test<-dtm[501:1000,]
+
+corpus.clean.train<-corpus.clean[1:500]
+corpus.clean.test<-corpus.clean[501:1000]
+
+dim(dtm.train)
+
+fivefreq<-findFreqTerms(dtm.train,5)
+length(fivefreq)
+
+dtm.train.nb<-DocumentTermMatrix(corpus.clean.train,control = list(dictionary=fivefreq))
+dim(dtm.train.nb)
+
+dtm.test.nb<-DocumentTermMatrix(corpus.clean.test,control = list(dictionary=fivefreq))
+dim(dtm.test.nb)
+ 
+#Boolean Naive Bayes
+convert_count <- function(x){
+    y<-ifelse(x>0,1,0)
+    y<-factor(y,levels=c(0,1),labels=c("no","yes"))
+    y
+}
+
+#Naive Bayes Model
+trainNB<-apply(dtm.train.nb,2,convert_count)
+testNB<-apply(dtm.test.nb,2,convert_count)
+#Training
+classifier <- naiveBayes(trainNB, df.train$klasifikasi, laplace = 1)
+
+#Use the NB classifier we built to make predictions on the test set
+pred <- predict(classifier, testNB)
+
+#Create a truth table by tabulating the predicted class labels with the actual predicted class labels with the actual class labels
+NB_table=table("Prediction"= pred, "Actual" = df.test$klasifikasi)
+NB_table
+
+#confussion Matrix
+conf.matNB <- confusionMatrix(pred, df.test$klasifikasi)
+conf.matNB
+
+#wordcloud
+wordcloud(corpus.clean,min.freq = 4,max.words=1000,random.order=F,colors=brewer.pal(8,"Dark2"))
+```
+
+```{r}
+library(shiny)
+library(syuzhet) #untuk membaca fungsi get_nrc
+dataLabel<- read.csv("data_label_halodoc.csv")
+ui <- fluidPage(
+    titlePanel("Sentimen Analisis Review Halodoc"),
+        mainPanel(
+            
+            tabsetPanel(type = "tabs",
+                        tabPanel("Bagan", plotOutput("scatterplot")), 
+                        # Plot
+                        tabPanel("Data", DT::dataTableOutput('tbl1')),
+                        # Output Data Dalam Tabel
+                        tabPanel("Wordcloud", plotOutput("Wordcloud"))
+                        )
+        )
+    )
+
+# SERVER
+#tempat data akan dianalisis dan diproses, hasilnya ditampilkan/diplotkan pada bagian mainpanel() ui
+
+server <- function(input, output) {
+    
+    # Output Data
+    output$tbl1 = DT::renderDataTable({
+        DT::datatable(dataLabel, options = list(lengthChange = FALSE))
+    })
+    
+    output$scatterplot <- renderPlot({produk_dataset<-read.csv("HalodocClean.csv",stringsAsFactors = FALSE)
+      review <-as.character(produk_dataset$text)
+      s<-get_nrc_sentiment(review)
+      review_combine<-cbind(produk_dataset$text,s)
+      par(mar=rep(3,4))
+      barplot(colSums(s),col=c('gray'),ylab='count',main='Sentimen Analisis Review Halodoc')
+          }, height=400)
+    output$Wordcloud <- renderPlot({
+     set.seed(20)
+      df<-df[sample(nrow(df)),]
+      df<-df[sample(nrow(df)),]
+      glimpse(df)
+      inspect(dtm[1:10,1:20])
+      df.train<-df[1:50,]
+      df.test<-df[51:100,]
+      dtm.train<-dtm[1:50,]
+      dtm.test<-dtm[51:100,]
+      dim(dtm.train)
+      fivefreq<-findFreqTerms(dtm.train,5)
+      length(fivefreq)
+      dtm.train.nb<-DocumentTermMatrix(corpus.clean.train,control = list(dictionary=fivefreq))
+      #dim(dtm.train.nb)
+      dtm.test.nb<-DocumentTermMatrix(corpus.clean.test,control = list(dictionary=fivefreq))
+      dim(dtm.test.nb)
+ 
+convert_count <- function(x){
+    y<-ifelse(x>0,1,0)
+    y<-factor(y,levels=c(0,1),labels=c("no","yes"))
+    y
+}
+trainNB<-apply(dtm.train.nb,2,convert_count)
+testNB<-apply(dtm.test.nb,1,convert_count)
+wordcloud(corpus.clean,min.freq = 4,max.words=100,random.order=F,colors=brewer.pal(8,"Dark2"))
+  })
+}
+
+shinyApp(ui = ui, server = server)
+```
